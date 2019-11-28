@@ -97,9 +97,51 @@
  *    simple tokens, not things like "ptr->val". -r is incompatible with all
  *    other options.
  */
+
 #include <ctype.h>
 #include <stdio.h>
-#include <misc.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdarg.h>
+#include "regexp.h"
+
+__dead
+static void
+usage(void)
+{
+
+	fprintf(stderr, "%s [-r newStr] [-clnsA] [pattern] filename ...\n",
+		getprogname());
+	exit(1);
+}
+
+static void *
+alloc(size_t n)
+{
+	void *buf;
+
+	buf = calloc(1, n);
+	if (buf == NULL) {
+		fprintf(stderr, "Out of memory\n");
+		exit(1);
+	}
+
+	return buf;
+}
+
+__dead
+static void
+fatal(char *s, ...)
+{
+	va_list ap;
+
+	va_start(ap, s);
+	vfprintf(stderr, s, ap);
+	va_end(ap);
+
+	exit(1);
+}
 
 /*
  * Cgrep never runs out of room on lines or buffers until malloc fails
@@ -113,7 +155,6 @@
  if (NULL == (buf = realloc(buf, has += 512))) \
   fatal(outSpace)
 
-extern char *realloc();
 static char outSpace[] = "cgrep: out of space";
 
 struct token {	/* collected token array */
@@ -168,55 +209,13 @@ static int lineno;		/* current line number */
 static int marked;		/* 1 if pattern found on line. */
 
 /*
- * Character types table
- * for the ASCII character set modified to see _ as alpha.
- * _ctype[0] is for EOF, the rest if indexed
- * by the ascii values of the characters.
- */
-static unsigned char _ctype[] = {
-	0,	/* EOF */
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _S|_C, _S|_C, _S|_C, _S|_C, _S|_C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_S|_X, _P, _P, _P, _P, _P, _P, _P,
-	_P, _P, _P, _P, _P, _P, _P, _P,
-	_D, _D, _D, _D, _D, _D, _D, _D,
-	_D, _D, _P, _P, _P, _P, _P, _P,
-	_P, _U, _U, _U, _U, _U, _U, _U,
-	_U, _U, _U, _U, _U, _U, _U, _U,
-	_U, _U, _U, _U, _U, _U, _U, _U,
-	_U, _U, _U, _P, _P, _P, _P, _L,
-	_P, _L, _L, _L, _L, _L, _L, _L,
-	_L, _L, _L, _L, _L, _L, _L, _L,
-	_L, _L, _L, _L, _L, _L, _L, _L,
-	_L, _L, _L, _P, _P, _P, _P, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C,
-	_C, _C, _C, _C, _C, _C, _C, _C
-};
-
-/*
  * Report errors for public domain regexp package.
  */
 void
 regerror(s)
 char *s;
 {
-	fatal("cgrep: pattern error %s\n", s);
+	fatal("%s: pattern error %s\n", getprogname(), s);
 }
 
 /*
@@ -224,8 +223,7 @@ char *s;
  * this mode will want to know about all hits on a line.
  */
 static void
-emacsLine(found, atline)
-char *found;
+emacsLine(char *found, int atline)
 {
 	extern char *tempnam();
 
@@ -233,7 +231,7 @@ char *found;
 	if ((NULL == tname) &&
 	    ((NULL == (tname = tempnam(NULL, "cgr"))) ||
              (NULL == (tfp = fopen(tname, "w")))))
-		fatal("cgrep: Cannot open tmp file");
+		fatal("%s: Cannot open tmp file", getprogname());
 	fprintf(tfp, "%d: %s: found '%s'\n", atline, filen, found);
 }
 
@@ -341,12 +339,12 @@ callEmacs()
 	fclose(tfp);
 #ifdef MSDOS
 	sprintf(line, "-e %s %s", tname, filen);
-	if (0x7f == (quit = execall("me", line)))
+	if (0x7f == (quit = execall("emacs", line)))
 #endif
-#ifdef COHERENT
-	sprintf(line, "me -e %s %s ", tname, filen);
+//#ifdef COHERENT
+	sprintf(line, "emacs -e %s %s ", tname, filen);
 	if (0x7f == (quit = system(line)))
-#endif
+//#endif
 #ifdef GEMDOS
 	cmda[2] = tname;
 	cmda[3] = filen;
@@ -425,7 +423,7 @@ lex()
 			}
 			goto isstart;
 		case token:
-			if (isalnum(c))
+			if (isalnum(c) || c == '_')
 				break;
 			gota(word, w);
 
@@ -581,25 +579,20 @@ isstart:		state = start;
 		callEmacs();
 }
 
-main(argc, argv)
-int argc;
-register char **argv;
+int
+main(int argc, char **argv)
 {
-	register char c;
+	char c;
 	int errsw = 0;
-	static char msg[] = "cgrep [-r newStr] [-clnsA] [pattern] filename ...";
 	char *p, *q;
-	extern int optind;
-	extern char *optarg;
+
+	setprogname(argv[0]);
 
 	if (1 == argc)
-		usage(msg);
+		usage();
 
-	while (EOF != (c = getopt(argc, argv, "cslnA?r:V"))) {
+	while (-1 != (c = getopt(argc, argv, "cslnA?r:"))) {
 		switch (c) {
-		case 'V':
-			printf("cgrep version 1.1\n");
-			exit(0);
 		case 'c':
 			cswitch = 1;	/* comments only */
 			break;
@@ -627,24 +620,24 @@ register char **argv;
 	/* check unknown switches and rswitch goes with no other switches */
 	if (errsw || 
 	    (rswitch && (aswitch | nswitch | lswitch | cswitch | sswitch)))
-		usage(msg);
+		usage();
 
 	if (!sswitch && !cswitch) {	/* process pattern */
 		if (optind == argc)		/* no pattern */
-			usage(msg);
+			usage();
 
 		/* inclose pattern in ^(  )$ to force full match */
 		p = alloc(5 + strlen(q = argv[optind++]));
 		sprintf(p, "^(%s)$", q);
 		if (NULL == (pat = regcomp(p)))
-			fatal("cgrep: Illegal pattern\n");
+			fatal("Illegal pattern\n");
 	}
 
 	ROOM(line, lineLen, 1);	/* get input line started */
 
 	if (optind == argc) {
 		if (aswitch | lswitch)
-			fatal("cgrep: -A and -l require a filename");
+			fatal("-A and -l require a filename");
 		lex();
 	}
 	else {
@@ -653,5 +646,6 @@ register char **argv;
 			lex();
 		}
 	}
-	exit(0);
+
+	return 0;
 }
